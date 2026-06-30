@@ -317,11 +317,13 @@ with st.expander("➕ Agregar curso manualmente (sin subir archivo)", expanded=F
     with col_f:
         m_tiene_labs = st.checkbox("Tiene Laboratorios", value=False, key="m_tiene_labs")
 
-    col_g, col_h = st.columns(2)
+    col_g, col_h, col_i = st.columns(3)
     with col_g:
         m_n_pcs = st.number_input("N° de Prácticas (PC) iniciales", min_value=1, max_value=10, value=4, key="m_n_pcs")
     with col_h:
         m_n_labs = st.number_input("N° de Laboratorios iniciales", min_value=0, max_value=10, value=2, key="m_n_labs", disabled=not m_tiene_labs)
+    with col_i:
+        m_creditos = st.number_input("Créditos del curso", min_value=1, max_value=10, value=3, key="m_creditos")
 
     if st.button("✅ Crear curso"):
         codigo_norm = nuevo_codigo.strip().upper()
@@ -336,7 +338,8 @@ with st.expander("➕ Agregar curso manualmente (sin subir archivo)", expanded=F
                 "labs": [0] * int(m_n_labs) if m_tiene_labs else [],
                 "ep": 0, "ef": 0, "sus": 0,
                 "tiene_labs": m_tiene_labs, "tiene_ep": m_tiene_ep,
-                "tiene_ef": m_tiene_ef, "tiene_sus": m_tiene_sus
+                "tiene_ef": m_tiene_ef, "tiene_sus": m_tiene_sus,
+                "creditos": int(m_creditos)
             }
             st.success(f"✅ Curso {codigo_norm} creado. Bájalo para registrar sus notas.")
             st.rerun()
@@ -488,7 +491,7 @@ for codigo in list(st.session_state.cursos.keys()):
 
         idx_col = 0
         with cols_cab[idx_col]:
-            cred = st.number_input("Créditos:", min_value=1, max_value=8, value=sugerir_creditos(codigo), key=f"cred_{codigo}")
+            cred = st.number_input("Créditos:", min_value=1, max_value=10, value=info.get("creditos", sugerir_creditos(codigo)), key=f"cred_{codigo}")
         idx_col += 1
 
         ep_val = 0
