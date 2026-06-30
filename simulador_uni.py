@@ -10,6 +10,7 @@ st.set_page_config(page_title="SUPERPRO de Notas", page_icon="🎯", layout="wid
 # --- BARRA LATERAL: CONFIGURACIÓN GLOBAL ---
 with st.sidebar:
     st.header("⚙️ Configuración Global")
+    st.caption("👆 Revisa esto antes de cargar tus notas: define cómo se calculan tus promedios.")
 
     nota_minima_global = st.number_input(
         "Nota mínima de aprobación", min_value=0.0, max_value=20.0,
@@ -254,6 +255,12 @@ def descargar_archivo_desde_url(url):
 
 # --- INTERFAZ GRÁFICA ---
 st.title("🎯 SUPERPRO de Notas")
+
+st.warning(
+    "📱 **¿Estás en el celular?** Toca la flecha **«** o el ícono **☰** en la esquina superior "
+    "izquierda para abrir el panel de **⚙️ Configuración de Notas** (nota mínima, PCs/Laboratorios "
+    "a eliminar, etc.). Es importante revisarlo antes de cargar tus notas."
+)
 
 st.markdown("""
 Esta aplicación ha sido diseñada como una herramienta avanzada de apoyo para estudiantes universitarios de pregrado. 
