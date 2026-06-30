@@ -3,8 +3,6 @@ import pdfplumber
 import re
 import io
 import requests
-from PIL import Image
-import pytesseract
 
 # Configuración de la página web
 st.set_page_config(page_title="SUPERPRO de Notas", page_icon="🎯", layout="wide")
@@ -232,7 +230,7 @@ class ArchivoDesdeURL(io.BytesIO):
 
 def descargar_archivo_desde_url(url):
     """
-    Descarga un PDF o imagen desde un link directo y devuelve un ArchivoDesdeURL,
+    Descarga un PDF desde un link directo y devuelve un ArchivoDesdeURL,
     o None junto con un mensaje de error si algo falla.
     """
     try:
@@ -244,88 +242,15 @@ def descargar_archivo_desde_url(url):
     contenido = respuesta.content
     content_type = respuesta.headers.get("Content-Type", "").split(";")[0].strip().lower()
 
-    if content_type not in ["application/pdf", "image/png", "image/jpeg", "image/jpg"]:
+    if content_type != "application/pdf":
         url_lower = url.strip().lower()
         if url_lower.endswith(".pdf") or contenido[:4] == b"%PDF":
             content_type = "application/pdf"
-        elif url_lower.endswith(".png"):
-            content_type = "image/png"
-        elif url_lower.endswith((".jpg", ".jpeg")):
-            content_type = "image/jpeg"
 
-    if content_type not in ["application/pdf", "image/png", "image/jpeg", "image/jpg"]:
-        return None, "❌ El enlace no parece apuntar directamente a un PDF o imagen. Verifica que sea un link de descarga directa."
+    if content_type != "application/pdf":
+        return None, "❌ El enlace no parece apuntar directamente a un PDF. Verifica que sea un link de descarga directa."
 
     return ArchivoDesdeURL(contenido, content_type), None
-
-def extraer_texto_ocr(archivo_imagen):
-    """Aplica OCR a una imagen (foto/captura de notas) y devuelve el texto detectado."""
-    imagen = Image.open(archivo_imagen)
-    if imagen.mode != "RGB":
-        imagen = imagen.convert("RGB")
-    texto = pytesseract.image_to_string(imagen, lang="eng")
-    return texto
-
-def procesar_lineas_a_cursos(texto):
-    """
-    Parsea texto plano (proveniente de OCR de una imagen) línea por línea
-    y construye el mismo diccionario 'cursos' que genera el lector de PDF,
-    detectando encabezados de curso (CODIGO-NOMBRE) y filas de evaluación (NOMBRE  NOTA).
-    """
-    cursos = {}
-    curso_actual = None
-    lineas = [l.strip() for l in texto.split("\n") if l.strip()]
-
-    patron_curso = re.compile(r'^([A-Za-z]{2,4}\s?\d{2,4}[A-Za-z]?)\s*[-–—]\s*(.+)$')
-    patron_nota_final = re.compile(r'(\d{1,2})\s*$')
-
-    for linea in lineas:
-        m_curso = patron_curso.match(linea)
-        if m_curso:
-            codigo_actual = m_curso.group(1).replace(" ", "").upper()
-            cursos[codigo_actual] = {
-                "nombre": m_curso.group(2).strip(),
-                "pcs": [], "labs": [], "ep": 0, "ef": 0, "sus": 0,
-                "tiene_labs": False, "tiene_ep": False, "tiene_ef": False, "tiene_sus": False
-            }
-            curso_actual = codigo_actual
-            continue
-
-        if not curso_actual:
-            continue
-
-        eval_nom = linea.upper()
-        if "LETRA" in eval_nom or "FECHA" in eval_nom or "MODALIDAD" in eval_nom:
-            continue
-
-        m_nota = patron_nota_final.search(linea)
-        if not m_nota:
-            continue
-        nota = int(m_nota.group(1))
-
-        if "LABORATORIO" in eval_nom or "LAMINA" in eval_nom or "LÁMINA" in eval_nom:
-            cursos[curso_actual]["tiene_labs"] = True
-        if "PARCIAL" in eval_nom:
-            cursos[curso_actual]["tiene_ep"] = True
-        if "FINAL" in eval_nom:
-            cursos[curso_actual]["tiene_ef"] = True
-        if "SUSTITUTORIO" in eval_nom or "SUST." in eval_nom:
-            cursos[curso_actual]["tiene_sus"] = True
-        if "FINAL" in eval_nom or "PARCIAL" in eval_nom:
-            cursos[curso_actual]["tiene_sus"] = True
-
-        if "PRACTICA" in eval_nom or "PRÁCTICA" in eval_nom:
-            cursos[curso_actual]["pcs"].append(nota)
-        elif "LABORATORIO" in eval_nom or "LAMINA" in eval_nom or "LÁMINA" in eval_nom:
-            cursos[curso_actual]["labs"].append(nota)
-        elif "PARCIAL" in eval_nom:
-            cursos[curso_actual]["ep"] = nota
-        elif "FINAL" in eval_nom:
-            cursos[curso_actual]["ef"] = nota
-        elif "SUSTITUTORIO" in eval_nom:
-            cursos[curso_actual]["sus"] = nota
-
-    return cursos
 
 # --- INTERFAZ GRÁFICA ---
 st.title("🎯 SUPERPRO de Notas")
@@ -412,15 +337,15 @@ with st.expander("➕ Agregar curso manualmente (sin subir archivo)", expanded=F
 st.markdown("---")
 
 archivo_subido = st.file_uploader(
-    "📂 Arrastra aquí tu archivo 'doc.pdf' o una foto/captura de tus notas",
-    type=["pdf", "png", "jpg", "jpeg"]
+    "📂 Arrastra aquí tu archivo 'doc.pdf'",
+    type=["pdf"]
 )
 
-st.markdown("**...o si prefieres, analiza un documento directamente desde un link:**")
+st.markdown("**...o si prefieres, analiza un documento PDF directamente desde un link:**")
 col_link1, col_link2 = st.columns([4, 1])
 with col_link1:
     url_documento = st.text_input(
-        "🔗 Pega el link directo a tu PDF o imagen de notas",
+        "🔗 Pega el link directo a tu PDF de notas",
         placeholder="https://ejemplo.com/mis-notas.pdf",
         key="url_documento",
         label_visibility="collapsed"
@@ -452,69 +377,50 @@ if archivo_subido is None and st.session_state.archivo_desde_link is not None:
 if archivo_subido is not None:
     cursos_archivo = {}
     institucion_detectada = "Centro de Estudios No Identificado"
-    es_imagen = archivo_subido.type in ["image/png", "image/jpeg", "image/jpg"]
+    curso_actual = None
+    with pdfplumber.open(archivo_subido) as pdf:
+        for pagina in pdf.pages:
+            texto_completo = pagina.extract_text() or ""
 
-    if es_imagen:
-        with st.spinner("🔎 Leyendo notas desde la imagen (OCR)..."):
-            texto_ocr = extraer_texto_ocr(archivo_subido)
-            cursos_archivo = procesar_lineas_a_cursos(texto_ocr)
+            # Identificación institucional inteligente mediante texto analizado
+            if "UNIVERSIDAD NACIONAL DE INGENIERÍA" in texto_completo.upper() or "UNI" in texto_completo.upper():
+                institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
 
-        if "UNIVERSIDAD NACIONAL DE INGENIERÍA" in texto_ocr.upper() or "UNI" in texto_ocr.upper():
-            institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
+            tablas = pagina.extract_tables()
+            for tabla in tablas:
+                for fila in tabla:
+                    if not fila or len(fila) < 2: continue
+                    celda_0, celda_1 = str(fila[0]).strip(), str(fila[1]).strip()
 
-        with st.expander("📝 Texto detectado por OCR (revisa si algo no se leyó bien)", expanded=False):
-            st.text(texto_ocr if texto_ocr.strip() else "No se detectó texto en la imagen.")
-
-        if not cursos_archivo:
-            st.warning(
-                "⚠️ No se pudo identificar ningún curso en la imagen. Asegúrate de que la foto esté nítida, "
-                "bien iluminada y que cada curso siga el formato 'CODIGO-NOMBRE' seguido de sus evaluaciones."
-            )
-    else:
-        curso_actual = None
-        with pdfplumber.open(archivo_subido) as pdf:
-            for pagina in pdf.pages:
-                texto_completo = pagina.extract_text() or ""
-            
-                # Identificación institucional inteligente mediante texto analizado
-                if "UNIVERSIDAD NACIONAL DE INGENIERÍA" in texto_completo.upper() or "UNI" in texto_completo.upper():
-                    institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
-            
-                tablas = pagina.extract_tables()
-                for tabla in tablas:
-                    for fila in tabla:
-                        if not fila or len(fila) < 2: continue
-                        celda_0, celda_1 = str(fila[0]).strip(), str(fila[1]).strip()
-                    
-                        if "-" in celda_0 and any(char.isdigit() for char in celda_0[:6]):
-                            partes = celda_0.split("-")
-                            codigo_actual = partes[0].strip()
-                            cursos_archivo[codigo_actual] = {
-                                "nombre": partes[1].strip(),
-                                "pcs": [], "labs": [], "ep": 0, "ef": 0, "sus": 0,
-                                "tiene_labs": False, "tiene_ep": False, "tiene_ef": False, "tiene_sus": False
-                            }
-                            curso_actual = codigo_actual
-                            continue
-                    
-                        if not curso_actual: continue
-                    
-                        eval_nom = celda_0.upper()
-                        if "LETRA" in eval_nom or "FECHA" in eval_nom or "MODALIDAD" in eval_nom: continue
-                    
-                        if "LABORATORIO" in eval_nom or "LÁMINA" in eval_nom or curso_actual == "AA237F":
-                            cursos_archivo[curso_actual]["tiene_labs"] = True
-                        if "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["tiene_ep"] = True
-                        if "FINAL" in eval_nom: cursos_archivo[curso_actual]["tiene_ef"] = True
-                        if "SUSTITUTORIO" in eval_nom or "SUST." in eval_nom: cursos_archivo[curso_actual]["tiene_sus"] = True
-                        if "FINAL" in eval_nom or "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["tiene_sus"] = True
-                    
-                        nota = int(celda_1) if celda_1.isdigit() else 0
-                        if "PRACTICA" in eval_nom: cursos_archivo[curso_actual]["pcs"].append(nota)
-                        elif "LABORATORIO" in eval_nom or "LÁMINA" in eval_nom: cursos_archivo[curso_actual]["labs"].append(nota)
-                        elif "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["ep"] = nota
-                        elif "FINAL" in eval_nom: cursos_archivo[curso_actual]["ef"] = nota
-                        elif "SUSTITUTORIO" in eval_nom: cursos_archivo[curso_actual]["sus"] = nota
+                    if "-" in celda_0 and any(char.isdigit() for char in celda_0[:6]):
+                        partes = celda_0.split("-")
+                        codigo_actual = partes[0].strip()
+                        cursos_archivo[codigo_actual] = {
+                            "nombre": partes[1].strip(),
+                            "pcs": [], "labs": [], "ep": 0, "ef": 0, "sus": 0,
+                            "tiene_labs": False, "tiene_ep": False, "tiene_ef": False, "tiene_sus": False
+                        }
+                        curso_actual = codigo_actual
+                        continue
+                
+                    if not curso_actual: continue
+                
+                    eval_nom = celda_0.upper()
+                    if "LETRA" in eval_nom or "FECHA" in eval_nom or "MODALIDAD" in eval_nom: continue
+                
+                    if "LABORATORIO" in eval_nom or "LÁMINA" in eval_nom or curso_actual == "AA237F":
+                        cursos_archivo[curso_actual]["tiene_labs"] = True
+                    if "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["tiene_ep"] = True
+                    if "FINAL" in eval_nom: cursos_archivo[curso_actual]["tiene_ef"] = True
+                    if "SUSTITUTORIO" in eval_nom or "SUST." in eval_nom: cursos_archivo[curso_actual]["tiene_sus"] = True
+                    if "FINAL" in eval_nom or "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["tiene_sus"] = True
+                
+                    nota = int(celda_1) if celda_1.isdigit() else 0
+                    if "PRACTICA" in eval_nom: cursos_archivo[curso_actual]["pcs"].append(nota)
+                    elif "LABORATORIO" in eval_nom or "LÁMINA" in eval_nom: cursos_archivo[curso_actual]["labs"].append(nota)
+                    elif "PARCIAL" in eval_nom: cursos_archivo[curso_actual]["ep"] = nota
+                    elif "FINAL" in eval_nom: cursos_archivo[curso_actual]["ef"] = nota
+                    elif "SUSTITUTORIO" in eval_nom: cursos_archivo[curso_actual]["sus"] = nota
 
     # Mostrar de qué institución provienen los datos analizados
     st.info(f"🏫 **Institución Académica Detectada:** {institucion_detectada}")
