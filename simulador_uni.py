@@ -222,7 +222,12 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
         suma_pesos_lab = sum(pesos_labs[i] for i in indices_finales_lb)
         prom_lab = suma_ponderada_lab / suma_pesos_lab if suma_pesos_lab > 0 else 0
 
-    pp = (prom_pc + prom_lab) / 2 if tiene_labs else prom_pc
+    if tiene_labs and pcs:
+        pp = (prom_pc + prom_lab) / 2
+    elif tiene_labs:
+        pp = prom_lab  # el curso solo tiene laboratorios/láminas, sin PCs: no se debe partir a la mitad
+    else:
+        pp = prom_pc
 
     # Sustitutorio
     ep_final, ef_final = ep, ef
