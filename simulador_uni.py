@@ -131,7 +131,7 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
     pesos_pcs = [1] * len(pcs)
     pesos_labs = [1] * len(labs)
     peso_ep = 1
-    peso_ef = 2  # Peso 2 por defecto
+    peso_ef = 1  # Por defecto todos los pesos son 1; el doble se activa solo con "ef vale por 2"
 
     # Índices forzados a eliminar por fórmula (caso especial, ignora protección)
     indices_forzados_eliminar_pc = set()
