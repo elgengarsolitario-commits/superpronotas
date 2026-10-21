@@ -1,6 +1,7 @@
 import streamlit as st
 import pdfplumber
 import re
+import copy
 from PIL import Image
 import pytesseract
 
@@ -47,8 +48,6 @@ st.markdown("""
         div[data-testid="column"] { padding: 0 0.15rem !important; min-width: 0 !important; }
         .stNumberInput label, .stCheckbox label, .stTextInput label, .stSelectbox label { font-size: 0.68rem; }
         .stMarkdown p { font-size: 0.8rem; }
-        /* En pantallas angostas ocultamos los botones +/- para ganar ancho;
-           el valor se sigue pudiendo escribir directamente. */
         .stNumberInput button { display: none; }
         .stNumberInput input { text-align: center; padding: 0.3rem 0.2rem; }
     }
@@ -115,25 +114,21 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
     while len(pcs_0a) < len(pcs):
         pcs_0a.append(False)
 
-    # Convertir nombres tipo "PC1" a índices (0-based) protegidos contra eliminación
     indices_protegidos = set()
     for p in pcs_protegidas:
         m = re.match(r'^PC\s*(\d+)$', str(p).strip().upper())
         if m:
             indices_protegidos.add(int(m.group(1)) - 1)
 
-    # "0A": marcado explícitamente como obligatorio -> nunca se elimina como "peor nota"
     for i, es_0a in enumerate(pcs_0a):
         if es_0a:
             indices_protegidos.add(i)
 
-    # Inicializar pesos base
     pesos_pcs = [1] * len(pcs)
     pesos_labs = [1] * len(labs)
     peso_ep = 1
-    peso_ef = 1  # Por defecto todos los pesos son 1; el doble se activa solo con "ef vale por 2"
+    peso_ef = 1
 
-    # Índices forzados a eliminar por fórmula (caso especial, ignora protección)
     indices_forzados_eliminar_pc = set()
     indices_forzados_eliminar_lb = set()
 
@@ -182,14 +177,11 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
                     msg_error = f"❌ Parámetro inválido: '{parte}'."
                 break
 
-    # Índices activos de PC (los forzados a eliminar por fórmula quedan totalmente fuera)
     indices_activos_pc = [i for i in range(len(pcs)) if i not in indices_forzados_eliminar_pc]
 
-    # Identificar cuáles PCs faltan por rendir (ND), solo entre las activas
     indices_pcs_faltantes = [i for i in indices_activos_pc if pcs_nd[i]]
     hay_pcs_faltantes = len(indices_pcs_faltantes) > 0
 
-    # 1. Lógica de Prácticas Calificadas (Eliminación de las N peores, respetando protegidas y 0A)
     indices_candidatos = [i for i in indices_activos_pc if i not in indices_protegidos]
     n_eliminar_real = min(n_pcs_eliminar, max(0, len(indices_candidatos) - 1)) if len(indices_activos_pc) > 1 else 0
 
@@ -203,7 +195,6 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
     suma_pesos_pc = sum(pesos_pcs[i] for i in indices_finales_pc)
     prom_pc = suma_ponderada_pc / suma_pesos_pc if suma_pesos_pc > 0 else 0
 
-    # 2. Lógica de laboratorios/láminas (Eliminación de las N peores)
     prom_lab = 0
     if tiene_labs and labs:
         indices_activos_lb = [i for i in range(len(labs)) if i not in indices_forzados_eliminar_lb]
@@ -225,11 +216,10 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
     if tiene_labs and pcs:
         pp = (prom_pc + prom_lab) / 2
     elif tiene_labs:
-        pp = prom_lab  # el curso solo tiene laboratorios/láminas, sin PCs: no se debe partir a la mitad
+        pp = prom_lab
     else:
         pp = prom_pc
 
-    # Sustitutorio
     ep_final, ef_final = ep, ef
     if tiene_sus and sus > 0:
         if tiene_ep and tiene_ef:
@@ -240,7 +230,6 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
         elif tiene_ef and sus > ef_final: ef_final = sus
         elif tiene_ep and sus > ep_final: ep_final = sus
 
-    # Promedio Final actual
     divisor_examen = (peso_ep if tiene_ep else 0) + (peso_ef if tiene_ef else 0) + 1
     if tiene_ep and tiene_ef:
         pf_actual = ((ep_final * peso_ep) + (ef_final * peso_ef) + pp) / divisor_examen
@@ -255,14 +244,12 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
         pf_actual = pp
         ef_necesario = 0
 
-    # --- MOTOR DE TIPS PRO ACTIVO ---
     tip_estrategia = ""
     sus_necesario = 0
 
     if pf_actual < nota_minima:
         puntos_objetivo_totales = nota_minima * divisor_examen
 
-        # Caso 1: Falta rendir alguna PC y el Examen Final aún no se rindió (ND)
         if hay_pcs_faltantes and tiene_ef and ef_nd:
             nota_simulada_pc = 14
             pcs_simuladas = list(pcs)
@@ -288,7 +275,6 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
                 ef_comb_necesario = (puntos_objetivo_totales - (ep_final * peso_ep) - ((20 + prom_lab)/2 if tiene_labs else 20)) / peso_ef
                 tip_estrategia = f"⚠️ ¡Falta presión!: Necesitas asegurar notas altas. Si sacas **20** en la {nombre_pcs_faltantes}, requieres mínimo un **{max(0.0, ef_comb_necesario):.1f}** en el Final."
 
-        # Caso 2: Falta rendir alguna PC pero el EF ya se rindió (o no existe)
         elif hay_pcs_faltantes:
             pp_necesario = puntos_objetivo_totales - (ep_final * peso_ep) - (ef_final * peso_ef)
             prom_pc_objetivo = (pp_necesario * 2) - prom_lab if tiene_labs else pp_necesario
@@ -307,7 +293,6 @@ def calcular_pf_curso(codigo, pcs, labs, ep, ef, sus, tiene_labs, tiene_ep, tien
                 else:
                     tip_estrategia = f"❌ Matemáticamente imposible aprobar solo con las prácticas (requieres {nota_pc_requerida:.1f}). Tu camino es el Examen Sustitutorio."
 
-        # Calcular Sustitutorio
         if tiene_sus:
             if tiene_ep and tiene_ef:
                 sus_reemplaza_ef = (puntos_objetivo_totales - (ep_final * peso_ep) - pp) / peso_ef
@@ -334,12 +319,16 @@ def extraer_texto_ocr(archivo_imagen):
     return texto
 
 
-# --- HELPERS COMPARTIDOS DE PARSEO (tabla PDF, texto de respaldo y OCR) ---
+# ==== PARSER START ====
+# Un solo parser de líneas para PDF (texto de TODAS las páginas), tablas (respaldo) y OCR.
+# Clave: el estado (cursos + curso_actual) se arrastra de una página a otra, y si un curso
+# reaparece (tabla partida entre páginas) se CONTINÚA el mismo curso en vez de recrearlo.
 
-def _crear_curso(cursos, codigo, nombre):
+def _crear_curso(cursos, codigo, nombre, manual=False):
     cursos[codigo] = {
         "nombre": nombre, "pcs": [], "labs": [], "ep": 0, "ef": 0, "sus": 0,
-        "tiene_labs": False, "tiene_ep": False, "tiene_ef": False, "tiene_sus": False
+        "tiene_labs": False, "tiene_ep": False, "tiene_ef": False, "tiene_sus": False,
+        "manual": manual
     }
     return codigo
 
@@ -371,62 +360,101 @@ def _procesar_fila_evaluacion(cursos, curso_actual, eval_nombre_raw, nota_raw):
         info["ep"] = nota
     elif "FINAL" in eval_nom:
         info["ef"] = nota
-    elif "SUSTITUTORIO" in eval_nom:
+    elif "SUSTITUTORIO" in eval_nom or "SUST." in eval_nom:
         info["sus"] = nota
 
 
-_PATRON_CURSO_TEXTO = re.compile(r'^([A-Za-z]{2,4}\s?\d{2,4}[A-Za-z]?)\s*[-–—]\s*(.+)$')
+# Encabezado de curso: "BMA03H - ALGEBRA LINEAL" (puede venir pegado a "Evaluación Nota Letra...")
+_PATRON_CURSO_TEXTO = re.compile(r'^([A-Za-z]{2,5}\s?\d{1,3}[A-Za-z]?)\s*[-–—]\s*(.+)$')
+# Fila de evaluación con texto después de la nota: "LABORATORIO 1 14 Catorce -- -- 07/09/2026 ..."
+_PATRON_EVAL_COMPLETA = re.compile(
+    r'^(PR[ÁA]CTICA(?:\s+CALIFICADA)?|LABORATORIO|L[ÁA]MINA|EXAMEN\s+PARCIAL|EXAMEN\s+FINAL|'
+    r'EXAMEN\s+SUSTITUTORIO|EXAMEN\s+SUST\.?)\s*(\d*)\s+(\d{1,2})(?:\s|$)',
+    re.IGNORECASE
+)
+# Fila simple que termina en la nota (OCR / tablas de 2 columnas): "EXAMEN FINAL 00"
 _PATRON_EVAL_TEXTO = re.compile(r'^(.*?\D)\s*(\d{1,2})\s*$')
 
 
-def procesar_lineas_a_cursos(texto):
+def _limpiar_nombre_curso(nombre):
+    nombre = re.split(r'Evaluaci[oó]n', nombre, flags=re.IGNORECASE)[0]
+    return nombre.strip(" -–—|").strip()
+
+
+def procesar_lineas_a_cursos(texto, cursos=None, curso_actual=None):
     """
-    Parsea texto plano (proveniente de OCR de una imagen, o de una página de PDF
-    donde no se detectó ninguna tabla) línea por línea y construye el diccionario
-    'cursos', detectando encabezados de curso (CODIGO-NOMBRE) y filas de evaluación.
+    Parsea texto plano línea por línea. Devuelve (cursos, curso_actual) para poder
+    encadenar páginas: si un curso continúa en la página siguiente, sus filas se
+    agregan al MISMO curso sin borrar lo anterior.
     """
-    cursos = {}
-    curso_actual = None
-    lineas = [l.strip() for l in texto.split("\n") if l.strip()]
+    if cursos is None:
+        cursos = {}
+    lineas = [re.sub(r'\s+', ' ', l.replace("|", " ")).strip() for l in texto.split("\n")]
+    lineas = [l for l in lineas if l]
 
     for linea in lineas:
+        # 1) Fila de evaluación (se prueba primero: es lo más frecuente)
+        m_full = _PATRON_EVAL_COMPLETA.match(linea)
+        if m_full and curso_actual:
+            nombre_eval = f"{m_full.group(1)} {m_full.group(2)}".strip()
+            _procesar_fila_evaluacion(cursos, curso_actual, nombre_eval, m_full.group(3))
+            continue
+
+        # 2) Encabezado de curso
         m_curso = _PATRON_CURSO_TEXTO.match(linea)
-        if m_curso:
-            codigo_actual = m_curso.group(1).replace(" ", "").upper()
-            curso_actual = _crear_curso(cursos, codigo_actual, m_curso.group(2).strip())
+        if m_curso and not m_full:
+            codigo = m_curso.group(1).replace(" ", "").upper()
+            nombre = _limpiar_nombre_curso(m_curso.group(2))
+            if codigo in cursos:
+                curso_actual = codigo          # continuación del mismo curso: NO se recrea
+            else:
+                curso_actual = _crear_curso(cursos, codigo, nombre)
             continue
 
         if not curso_actual:
             continue
 
+        # 3) Fila simple "NOMBRE nota"
         m_eval = _PATRON_EVAL_TEXTO.match(linea)
-        if not m_eval:
-            continue
+        if m_eval:
+            _procesar_fila_evaluacion(cursos, curso_actual, m_eval.group(1).strip(), m_eval.group(2))
 
-        _procesar_fila_evaluacion(cursos, curso_actual, m_eval.group(1).strip(), m_eval.group(2))
-
-    return cursos
+    return cursos, curso_actual
 
 
-def _combinar_curso(cursos_base, cursos_nuevos):
-    """Fusiona cursos detectados por texto de respaldo en el diccionario principal,
-    evitando pisar un curso que ya exista con datos."""
-    for codigo, info in cursos_nuevos.items():
-        if codigo not in cursos_base:
-            cursos_base[codigo] = info
-        else:
-            base = cursos_base[codigo]
-            # Solo añade lo que falte, para no duplicar filas ya leídas por tabla
-            if not base["pcs"] and info["pcs"]: base["pcs"] = info["pcs"]
-            if not base["labs"] and info["labs"]: base["labs"] = info["labs"]
-            if not base["ep"] and info["ep"]: base["ep"] = info["ep"]
-            if not base["ef"] and info["ef"]: base["ef"] = info["ef"]
-            if not base["sus"] and info["sus"]: base["sus"] = info["sus"]
-            base["tiene_labs"] = base["tiene_labs"] or info["tiene_labs"]
-            base["tiene_ep"] = base["tiene_ep"] or info["tiene_ep"]
-            base["tiene_ef"] = base["tiene_ef"] or info["tiene_ef"]
-            base["tiene_sus"] = base["tiene_sus"] or info["tiene_sus"]
+def leer_pdf(archivo):
+    """Lee TODAS las páginas. Primero por texto; si no se detecta nada, por tablas."""
+    cursos, curso_actual = {}, None
+    texto_total = ""
+    paginas_tabla = []
+    with pdfplumber.open(archivo) as pdf:
+        for pagina in pdf.pages:
+            texto = pagina.extract_text() or ""
+            texto_total += texto + "\n"
+            cursos, curso_actual = procesar_lineas_a_cursos(texto, cursos, curso_actual)
+            try:
+                filas = []
+                for tabla in pagina.extract_tables():
+                    for fila in tabla:
+                        celdas = [str(c).replace("\n", " ").strip() for c in (fila or []) if c]
+                        if celdas:
+                            filas.append(" ".join(celdas))
+                paginas_tabla.append("\n".join(filas))
+            except Exception:
+                paginas_tabla.append("")
 
+    # Respaldo: si el texto plano no dio ningún curso con datos, probar con las tablas
+    if not any(c["pcs"] or c["labs"] or c["tiene_ep"] or c["tiene_ef"] for c in cursos.values()):
+        cursos, curso_actual = {}, None
+        for t in paginas_tabla:
+            cursos, curso_actual = procesar_lineas_a_cursos(t, cursos, curso_actual)
+    return cursos, texto_total
+# ==== PARSER END ====
+
+
+# --- ESTADO: CURSOS AGREGADOS MANUALMENTE ---
+if "cursos_manuales" not in st.session_state:
+    st.session_state["cursos_manuales"] = {}
 
 # --- INTERFAZ GRÁFICA ---
 st.title("🎯 SUPERPRO de Notas")
@@ -440,30 +468,24 @@ para lograr la meta académica de aprobación.
 
 with st.expander("ℹ️ ¿Cómo debe verse tu documento para que el programa lo registre correctamente?", expanded=False):
     st.markdown("""
-    Para garantizar que el lector automático procese tus asignaturas sin errores, el archivo PDF cargado (ej. reporte de la **DIRCE**) debe contener una estructura limpia y tabular similar a la siguiente:
-
-    ### 1. Estructura de Bloque por Curso
-    Cada asignatura debe iniciar con su respectivo código y nombre oficial separados por un guion:
+    El lector analiza **todas las páginas** del PDF (ej. reporte de la **DIRCE**), línea por línea. Cada curso debe iniciar con su código y nombre separados por un guion:
     * `BMA01-ANÁLISIS MATEMÁTICO I`
     * `MS211-SEGURIDAD E HIGIENE INDUSTRIAL`
 
-    ### 2. Formato de las Tablas de Calificaciones
-    Dentro de cada bloque de curso, las evaluaciones y sus respectivas notas deben estar dispuestas en dos columnas claras (Evaluación | Nota):
+    Y debajo, sus evaluaciones con la nota:
 
     ```text
-    +----------------------------------+----+
-    | PRACTICA CALIFICADA 1            | 08 |
-    | PRACTICA CALIFICADA 2            | 04 |
-    | PRACTICA CALIFICADA 3            | 07 |
-    | PRACTICA CALIFICADA 4            | 10 |
-    | EXAMEN PARCIAL                   | 11 |
-    | EXAMEN FINAL                     | 00 |
-    +----------------------------------+----+
+    PRACTICA 1            08
+    PRACTICA 2            04
+    LABORATORIO 1         12
+    EXAMEN PARCIAL        11
+    EXAMEN FINAL          00
     ```
-    *Nota: Las evaluaciones que aún no rindas pueden figurar con `0` o `00`. Cada vez que una PC quede en 0, la app te deja elegir qué significa ese 0: **ND** (pendiente, aún no la rindes), **0 real** (nota tomada, puede salir elegida como la peor y eliminarse) o **0A** (nota tomada, cuenta obligatoria y nunca se elimina).*
+    *Las evaluaciones que aún no rindas pueden figurar con `0` o `00`. Cada vez que una PC quede en 0, la app te deja elegir qué significa ese 0: **ND** (pendiente), **0 real** (nota tomada, puede eliminarse) o **0A** (nota tomada, obligatoria, nunca se elimina).*
 
-    ### 3. Tablas partidas entre dos caras/páginas
-    Si una tabla de un curso continúa en la siguiente página sin repetir bordes, el lector ahora también revisa el texto plano de esa página como respaldo, para no perder las filas que quedaron en la segunda cara.
+    **Cursos partidos entre páginas:** si un curso continúa en la siguiente página (repitiendo el encabezado), sus filas se unen al mismo curso.
+
+    **¿Falta algún curso?** Usa el bloque **➕ Agregar un curso manualmente** para añadirlo, incluso con un documento ya cargado.
     """)
 
 st.markdown("---")
@@ -473,17 +495,18 @@ archivo_subido = st.file_uploader(
     type=["pdf", "png", "jpg", "jpeg"]
 )
 
+cursos = {}
+institucion_detectada = None
+
 if archivo_subido is not None:
-    cursos = {}
-    institucion_detectada = "Centro de Estudios No Identificado"
     es_imagen = archivo_subido.type in ["image/png", "image/jpeg", "image/jpg"]
 
     if es_imagen:
         with st.spinner("🔎 Leyendo notas desde la imagen (OCR)..."):
             texto_ocr = extraer_texto_ocr(archivo_subido)
-            cursos = procesar_lineas_a_cursos(texto_ocr)
+            cursos, _ = procesar_lineas_a_cursos(texto_ocr)
 
-        if "UNIVERSIDAD NACIONAL DE INGENIERÍA" in texto_ocr.upper() or "UNI" in texto_ocr.upper():
+        if "UNIVERSIDAD NACIONAL DE INGENIER" in texto_ocr.upper():
             institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
 
         with st.expander("📝 Texto detectado por OCR (revisa si algo no se leyó bien)", expanded=False):
@@ -495,57 +518,76 @@ if archivo_subido is not None:
                 "bien iluminada y que cada curso siga el formato 'CODIGO-NOMBRE' seguido de sus evaluaciones."
             )
     else:
-        curso_actual = None
-        with pdfplumber.open(archivo_subido) as pdf:
-            for pagina in pdf.pages:
-                texto_completo = pagina.extract_text() or ""
+        with st.spinner("📄 Analizando todas las páginas del PDF..."):
+            cursos, texto_pdf = leer_pdf(archivo_subido)
+        if "UNIVERSIDAD NACIONAL DE INGENIER" in texto_pdf.upper():
+            institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
 
-                # Identificación institucional inteligente mediante texto analizado
-                if "UNIVERSIDAD NACIONAL DE INGENIERÍA" in texto_completo.upper() or "UNI" in texto_completo.upper():
-                    institucion_detectada = "Universidad Nacional de Ingeniería (UNI)"
+        with st.expander("📝 Texto leído del PDF (para depurar si algo falta)", expanded=False):
+            st.text(texto_pdf if texto_pdf.strip() else "No se pudo extraer texto del PDF.")
 
-                tablas = pagina.extract_tables()
-                filas_totales = []
-                for tabla in tablas:
-                    filas_totales.extend(tabla)
+    if institucion_detectada:
+        st.info(f"🏫 **Institución Académica Detectada:** {institucion_detectada}")
+    if cursos:
+        resumen = " · ".join(
+            f"{c} ({len(i['pcs'])} PC, {len(i['labs'])} Lab)" for c, i in cursos.items()
+        )
+        st.success(f"✅ Se detectaron {len(cursos)} curso(s): {resumen}")
+    elif not es_imagen:
+        st.warning("⚠️ No se detectó ningún curso en el PDF. Puedes agregarlos manualmente abajo.")
 
-                if filas_totales:
-                    for fila in filas_totales:
-                        if not fila or len(fila) < 2: continue
-                        celda_0 = str(fila[0] or "").strip()
-                        celda_1 = str(fila[1] or "").strip()
-                        if not celda_0: continue
+# --- AGREGAR CURSOS MANUALMENTE (funciona con o sin documento cargado) ---
+with st.expander("➕ Agregar un curso manualmente", expanded=False):
+    mc1, mc2 = st.columns(2, gap="small")
+    with mc1:
+        cod_manual = st.text_input("Código del curso", placeholder="Ej: BMA02", key="man_cod")
+    with mc2:
+        nom_manual = st.text_input("Nombre del curso", placeholder="Ej: Cálculo Integral", key="man_nom")
 
-                        if "-" in celda_0 and any(char.isdigit() for char in celda_0[:6]):
-                            partes = celda_0.split("-")
-                            codigo_actual = partes[0].strip()
-                            curso_actual = _crear_curso(cursos, codigo_actual, partes[1].strip())
-                            continue
+    mc3, mc4 = st.columns(2, gap="small")
+    with mc3:
+        n_pcs_man = st.number_input("N° de Prácticas (PC)", min_value=0, max_value=10, value=4, key="man_npcs")
+    with mc4:
+        n_labs_man = st.number_input("N° de Laboratorios / Láminas", min_value=0, max_value=12, value=0, key="man_nlabs")
 
-                        if not curso_actual: continue
-                        _procesar_fila_evaluacion(cursos, curso_actual, celda_0, celda_1)
-                else:
-                    # Respaldo: esta página no tuvo tabla detectable (típico cuando una
-                    # tabla de un curso continúa de la cara anterior sin bordes propios).
-                    # Analizamos el texto plano línea por línea con la misma lógica del OCR.
-                    cursos_respaldo = procesar_lineas_a_cursos(texto_completo)
-                    if cursos_respaldo:
-                        _combinar_curso(cursos, cursos_respaldo)
-                    elif curso_actual:
-                        # Ni siquiera hay encabezado de curso nuevo en esta página: puede ser
-                        # pura continuación de filas sueltas del curso anterior.
-                        for linea in [l.strip() for l in texto_completo.split("\n") if l.strip()]:
-                            m_eval = _PATRON_EVAL_TEXTO.match(linea)
-                            if m_eval:
-                                _procesar_fila_evaluacion(cursos, curso_actual, m_eval.group(1).strip(), m_eval.group(2))
+    mc5, mc6, mc7 = st.columns(3, gap="small")
+    with mc5:
+        ep_man = st.checkbox("Tiene Examen Parcial", value=True, key="man_ep")
+    with mc6:
+        ef_man = st.checkbox("Tiene Examen Final", value=True, key="man_ef")
+    with mc7:
+        sus_man = st.checkbox("Tiene Sustitutorio", value=True, key="man_sus")
 
-    # Mostrar de qué institución provienen los datos analizados
-    st.info(f"🏫 **Institución Académica Detectada:** {institucion_detectada}")
-    st.success("✅ ¡Análisis de documentos pregrado completado!")
+    if st.button("➕ Agregar curso", key="btn_agregar_curso"):
+        codigo_m = re.sub(r'\s+', '', cod_manual).upper()
+        if not codigo_m:
+            st.error("Escribe al menos el código del curso.")
+        elif not (n_pcs_man or n_labs_man or ep_man or ef_man):
+            st.error("El curso debe tener al menos una evaluación.")
+        else:
+            nuevo = {
+                "nombre": nom_manual.strip() or codigo_m,
+                "pcs": [0] * int(n_pcs_man), "labs": [0] * int(n_labs_man),
+                "ep": 0, "ef": 0, "sus": 0,
+                "tiene_labs": n_labs_man > 0, "tiene_ep": bool(ep_man),
+                "tiene_ef": bool(ef_man), "tiene_sus": bool(sus_man),
+                "manual": True
+            }
+            clave = codigo_m
+            if clave in cursos or clave in st.session_state["cursos_manuales"]:
+                clave = f"{codigo_m}_M"
+            st.session_state["cursos_manuales"][clave] = nuevo
+            st.rerun()
 
+# Unir cursos manuales con los del documento
+for clave_m, info_m in st.session_state["cursos_manuales"].items():
+    cursos[clave_m] = copy.deepcopy(info_m)
+
+if not cursos:
+    st.info("📌 Sube tu documento o agrega un curso manualmente para comenzar.")
+else:
     notas_modificadas = {}
 
-    # Estados posibles para una nota en 0 (aplican a las Prácticas Calificadas)
     OPCIONES_CERO = ["ND (pendiente)", "0 real (eliminable)", "0A (obligatorio)"]
 
     def _interpretar_estado_cero(valor_nota, estado):
@@ -559,9 +601,6 @@ if archivo_subido is not None:
         return True, False
 
     def _valores_previos(codigo, info):
-        """Lee del session_state los valores ya elegidos por el usuario en un run
-        anterior (o los originales del documento si aún no existen), para poder
-        mostrar el promedio del curso en la etiqueta del bloque plegable."""
         pcs_prev, nd_prev, a0_prev = [], [], []
         for i, v in enumerate(info["pcs"]):
             v_prev = st.session_state.get(f"pc_{codigo}_{i}", v)
@@ -582,10 +621,10 @@ if archivo_subido is not None:
 
         if not info["pcs"] and not info["labs"] and not info["tiene_ep"] and not info["tiene_ef"]: continue
 
-        if info["pcs"] and len(info["pcs"]) < 4:
+        # Los cursos del documento se rellenan hasta 4 PCs; los manuales respetan lo elegido
+        if not info.get("manual") and info["pcs"] and len(info["pcs"]) < 4:
             while len(info["pcs"]) < 4: info["pcs"].append(0)
 
-        # --- Etiqueta del bloque plegable con el promedio ya calculado ---
         etiqueta_pf = ""
         try:
             pcs_prev, nd_prev, a0_prev, labs_prev, ep_prev, ef_prev, sus_prev, ef_nd_prev, formula_prev = _valores_previos(codigo, info)
@@ -600,9 +639,8 @@ if archivo_subido is not None:
         except Exception:
             etiqueta_pf = ""
 
-        # key fijo (independiente del texto de la etiqueta) para que el bloque
-        # NO se cierre solo cuando el promedio mostrado cambia al tocar un checkbox.
-        with st.expander(f"📖 {info['nombre']} ({codigo}){etiqueta_pf}", expanded=False, key=f"exp_{codigo}"):
+        marca_manual = " ✏️" if info.get("manual") else ""
+        with st.expander(f"📖 {info['nombre']} ({codigo}){marca_manual}{etiqueta_pf}", expanded=False, key=f"exp_{codigo}"):
             num_cols = 1 + int(info["tiene_ep"]) + int(info["tiene_ef"]) + int(info["tiene_sus"])
             cols_cab = st.columns(num_cols, gap="small")
 
@@ -665,11 +703,15 @@ if archivo_subido is not None:
             nuevos_labs = []
             if info["tiene_labs"] and info["labs"]:
                 st.markdown("**Laboratorios / Láminas de Dibujo:**")
-                cols_labs = st.columns(len(info["labs"]), gap="small")
-                for idx, nota_lab in enumerate(info["labs"]):
-                    with cols_labs[idx]:
-                        n_lab = st.number_input(f"L/L {idx+1}", min_value=0, max_value=20, value=nota_lab, key=f"lab_{codigo}_{idx}")
-                        nuevos_labs.append(n_lab)
+                # Filas de máx. 6 columnas para que 8+ laboratorios no queden apretados
+                por_fila = 6
+                for ini in range(0, len(info["labs"]), por_fila):
+                    bloque = list(enumerate(info["labs"]))[ini:ini + por_fila]
+                    cols_labs = st.columns(len(bloque), gap="small")
+                    for col, (idx, nota_lab) in zip(cols_labs, bloque):
+                        with col:
+                            n_lab = st.number_input(f"L/L {idx+1}", min_value=0, max_value=20, value=nota_lab, key=f"lab_{codigo}_{idx}")
+                            nuevos_labs.append(n_lab)
 
             prom_pc, prom_lab, pp, pf, ef_nec, sus_nec, hay_pcs_faltantes, formula_valida, mensaje_validacion, tip_estrategia = calcular_pf_curso(
                 codigo, nuevas_pcs, nuevos_labs, ep_val, ef_val, sus_val,
@@ -703,6 +745,11 @@ if archivo_subido is not None:
                     st.success("✅ Asignatura Aprobada")
                 else:
                     st.error("❌ Asignatura Desaprobada")
+
+            if info.get("manual"):
+                if st.button("🗑️ Quitar este curso", key=f"del_{codigo}"):
+                    st.session_state["cursos_manuales"].pop(codigo, None)
+                    st.rerun()
 
     # --- PROMEDIO PONDERADO TOTAL ---
     st.markdown("---")
