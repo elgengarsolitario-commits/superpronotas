@@ -537,7 +537,7 @@ if archivo_subido is not None:
         st.warning("⚠️ No se detectó ningún curso en el PDF. Puedes agregarlos manualmente abajo.")
 
 # --- AGREGAR CURSOS MANUALMENTE (funciona con o sin documento cargado) ---
-with st.expander("➕ Agregar un curso manualmente", expanded=False):
+with st.expander("➕ Agregar un curso manualmente (ej. Antropología, Geología...)", expanded=archivo_subido is not None):
     mc1, mc2 = st.columns(2, gap="small")
     with mc1:
         cod_manual = st.text_input("Código del curso", placeholder="Ej: BMA02", key="man_cod")
@@ -619,7 +619,12 @@ else:
 
     for codigo, info in list(cursos.items()):
 
-        if not info["pcs"] and not info["labs"] and not info["tiene_ep"] and not info["tiene_ef"]: continue
+        # Curso detectado pero sin ninguna evaluación (aún sin notas): igual se muestra,
+        # con una estructura estándar editable (4 PCs, parcial, final y sustitutorio).
+        if not info["pcs"] and not info["labs"] and not info["tiene_ep"] and not info["tiene_ef"]:
+            info["pcs"] = [0] * 4
+            info["tiene_ep"] = info["tiene_ef"] = info["tiene_sus"] = True
+            info["sin_evaluaciones"] = True
 
         # Los cursos del documento se rellenan hasta 4 PCs; los manuales respetan lo elegido
         if not info.get("manual") and info["pcs"] and len(info["pcs"]) < 4:
@@ -639,7 +644,7 @@ else:
         except Exception:
             etiqueta_pf = ""
 
-        marca_manual = " ✏️" if info.get("manual") else ""
+        marca_manual = " ✏️" if info.get("manual") else (" 🆕 sin notas" if info.get("sin_evaluaciones") else "")
         with st.expander(f"📖 {info['nombre']} ({codigo}){marca_manual}{etiqueta_pf}", expanded=False, key=f"exp_{codigo}"):
             num_cols = 1 + int(info["tiene_ep"]) + int(info["tiene_ef"]) + int(info["tiene_sus"])
             cols_cab = st.columns(num_cols, gap="small")
